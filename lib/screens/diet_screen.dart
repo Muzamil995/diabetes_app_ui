@@ -3,6 +3,7 @@ import '../utils/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class DietScreen extends StatefulWidget {
   const DietScreen({Key? key}) : super(key: key);
@@ -13,6 +14,11 @@ class DietScreen extends StatefulWidget {
 
 class _DietScreenState extends State<DietScreen> {
   List<Map<String, String>> meals = [];
+  int _totalCalories = 0;
+  static const int dailyTargetCalories = 1800; // Change this if needed
+
+  final supabase = Supabase.instance.client;
+  String? _deviceId;
 
   @override
   void initState() {
@@ -23,16 +29,83 @@ class _DietScreenState extends State<DietScreen> {
   Future<void> _loadMeals() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? storedMeals = prefs.getString('diet_meals');
+
     if (storedMeals != null) {
       setState(() {
         meals = List<Map<String, String>>.from(json.decode(storedMeals));
       });
     }
+
+    _deviceId ??= prefs.getString('device_id') ?? UniqueKey().toString();
+    await prefs.setString('device_id', _deviceId!);
+
+    try {
+      final response = await supabase
+          .from('diet_meals')
+          .select()
+          .eq('device_id', _deviceId!);
+
+      if (response.isNotEmpty) {
+        setState(() {
+          meals = (response as List)
+              .map((e) => {
+            'title': e['title'] as String,
+            'time': e['time'] as String,
+            'description': e['description'] as String,
+            'calories': e['calories'] as String,
+          })
+              .toList();
+        });
+      }
+    } catch (e) {
+      print('Supabase load error: $e');
+    }
+
+    // Recalculate total calories after loading (from local or cloud)
+    _totalCalories = meals.fold(0, (sum, meal) {
+      return sum + (int.tryParse(meal['calories'] ?? '0') ?? 0);
+    });
+
+    if (mounted) setState(() {});
   }
 
   Future<void> _saveMeals() async {
+    // Recalculate total calories
+    _totalCalories = meals.fold(0, (sum, meal) {
+      return sum + (int.tryParse(meal['calories'] ?? '0') ?? 0);
+    });
+
+    // Save locally
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString('diet_meals', json.encode(meals));
+
+    // Save to Supabase
+    if (_deviceId == null) return;
+
+    try {
+      await supabase
+          .from('diet_meals')
+          .delete()
+          .eq('device_id', _deviceId!);
+
+      if (meals.isNotEmpty) {
+        final List<Map<String, dynamic>> dataToInsert = meals.map((meal) {
+          return {
+            'device_id': _deviceId,
+            'title': meal['title'],
+            'time': meal['time'],
+            'description': meal['description'],
+            'calories': meal['calories'],
+          };
+        }).toList();
+
+        await supabase.from('diet_meals').insert(dataToInsert);
+      }
+    } catch (e) {
+      print('Supabase save error: $e');
+    }
+
+    if (mounted) setState(() {});
   }
 
   void _addMeal() {
@@ -114,7 +187,9 @@ class _DietScreenState extends State<DietScreen> {
     );
     if (picked != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Selected date: ${DateFormat('yyyy-MM-dd').format(picked)}')),
+        SnackBar(
+          content: Text('Selected date: ${DateFormat('yyyy-MM-dd').format(picked)}'),
+        ),
       );
     }
   }
@@ -123,7 +198,7 @@ class _DietScreenState extends State<DietScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Diet Plan'),
+        title: const Text('Diet Plan',style: TextStyle(color: Colors.white),),
         actions: [
           IconButton(
             icon: const Icon(Icons.calendar_today),
@@ -134,7 +209,7 @@ class _DietScreenState extends State<DietScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // Calorie Summary (static example)
+            // Dynamic Calorie Summary
             Container(
               margin: const EdgeInsets.all(16),
               padding: const EdgeInsets.all(20),
@@ -154,23 +229,23 @@ class _DietScreenState extends State<DietScreen> {
                   const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
+                    children: [
                       Text(
-                        '1,250',
-                        style: TextStyle(
+                        '$_totalCalories',
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 40,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       Text(
-                        ' / 1,800',
-                        style: TextStyle(
+                        ' / $dailyTargetCalories',
+                        style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 20,
                         ),
                       ),
-                      Text(
+                      const Text(
                         ' kcal',
                         style: TextStyle(
                           color: Colors.white,
@@ -191,7 +266,6 @@ class _DietScreenState extends State<DietScreen> {
                 ],
               ),
             ),
-
             // Meal List
             Padding(
               padding: const EdgeInsets.all(16),
@@ -225,7 +299,7 @@ class _DietScreenState extends State<DietScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppTheme.primaryRed,
-        child: const Icon(Icons.add),
+        child: const Icon(Icons.add,color: Colors.white,),
         onPressed: _addMeal,
       ),
     );
@@ -236,7 +310,13 @@ class NutrientInfo extends StatelessWidget {
   final String label;
   final String amount;
   final String percentage;
-  const NutrientInfo({required this.label, required this.amount, required this.percentage, Key? key}) : super(key: key);
+
+  const NutrientInfo({
+    required this.label,
+    required this.amount,
+    required this.percentage,
+    Key? key,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -257,6 +337,7 @@ class MealCard extends StatelessWidget {
   final String description;
   final String calories;
   final VoidCallback onDelete;
+
   const MealCard({
     required this.title,
     required this.time,
@@ -274,7 +355,14 @@ class MealCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 3, offset: const Offset(0, 2))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 3,
+            offset: const Offset(0, 2),
+          )
+        ],
       ),
       child: Row(
         children: [

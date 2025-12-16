@@ -3,6 +3,7 @@ import '../utils/theme.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:convert';
 
 class GlucoseScreen extends StatefulWidget {
@@ -14,6 +15,8 @@ class GlucoseScreen extends StatefulWidget {
 
 class _GlucoseScreenState extends State<GlucoseScreen> {
   List<Map<String, String>> readings = [];
+  final supabase = Supabase.instance.client;
+  bool _isLoading = false;
 
   @override
   void initState() {
@@ -22,6 +25,9 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
   }
 
   Future<void> _loadReadings() async {
+    setState(() => _isLoading = true);
+
+    // Load from SharedPreferences first (fast)
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? storedReadings = prefs.getString('glucose_readings');
     if (storedReadings != null) {
@@ -30,11 +36,99 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
             json.decode(storedReadings));
       });
     }
+
+    // Then sync with Supabase (if user is logged in)
+    await _syncWithSupabase();
+
+    setState(() => _isLoading = false);
+  }
+
+  Future<void> _syncWithSupabase() async {
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+
+      // Fetch readings from Supabase
+      final response = await supabase
+          .from('glucose_readings')
+          .select()
+          .eq('user_id', user.id)
+          .order('created_at', ascending: false);
+
+      if (response.isNotEmpty) {
+        List<Map<String, String>> supabaseReadings = [];
+        for (var item in response) {
+          supabaseReadings.add({
+            'value': item['value'].toString(),
+            'label': item['label'].toString(),
+            'time': item['time'].toString(),
+            'id': item['id'].toString(),
+          });
+        }
+
+        // Update local data with Supabase data
+        setState(() {
+          readings = supabaseReadings;
+        });
+
+        // Save to SharedPreferences
+        await _saveReadingsLocally();
+      }
+    } catch (e) {
+      print('Error syncing with Supabase: $e');
+      // Continue with local data if Supabase fails
+    }
+  }
+
+  Future<void> _saveReadingsLocally() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString('glucose_readings', json.encode(readings));
   }
 
   Future<void> _saveReadings() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString('glucose_readings', json.encode(readings));
+    // Save to SharedPreferences (local)
+    await _saveReadingsLocally();
+
+    // Save to Supabase (cloud)
+    await _saveToSupabase();
+  }
+
+  Future<void> _saveToSupabase() async {
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+
+      // Get the last reading (most recently added)
+      if (readings.isNotEmpty) {
+        final lastReading = readings.last;
+
+        // Insert to Supabase
+        await supabase.from('glucose_readings').insert({
+          'user_id': user.id,
+          'value': double.parse(lastReading['value']!),
+          'label': lastReading['label'],
+          'time': lastReading['time'],
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+    } catch (e) {
+      print('Error saving to Supabase: $e');
+      // Data is still saved locally in SharedPreferences
+    }
+  }
+
+  Future<void> _deleteFromSupabase(String? id) async {
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null || id == null) return;
+
+      await supabase
+          .from('glucose_readings')
+          .delete()
+          .eq('id', id);
+    } catch (e) {
+      print('Error deleting from Supabase: $e');
+    }
   }
 
   void _addReading() {
@@ -71,7 +165,7 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               if (valueController.text.isNotEmpty &&
                   labelController.text.isNotEmpty) {
                 String time =
@@ -83,7 +177,7 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
                     'time': time,
                   });
                 });
-                _saveReadings();
+                await _saveReadings();
                 Navigator.pop(context);
               }
             },
@@ -94,11 +188,19 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
     );
   }
 
-  void _deleteReading(int index) {
+  void _deleteReading(int index) async {
+    final reading = readings[index];
+
     setState(() {
       readings.removeAt(index);
     });
-    _saveReadings();
+
+    await _saveReadingsLocally();
+
+    // Delete from Supabase if it has an ID
+    if (reading.containsKey('id')) {
+      await _deleteFromSupabase(reading['id']);
+    }
   }
 
   @override
@@ -119,7 +221,28 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Glucose Monitor'),
+        title: const Text('Glucose Monitor',style: TextStyle(color: Colors.white),),
+        actions: [
+          if (_isLoading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.only(right: 16.0),
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _syncWithSupabase,
+            tooltip: 'Sync with cloud',
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -241,7 +364,7 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppTheme.primaryRed,
-        child: const Icon(Icons.add),
+        child: const Icon(Icons.add,color: Colors.white,),
         onPressed: _addReading,
       ),
     );

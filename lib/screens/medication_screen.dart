@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../utils/theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:supabase_flutter/supabase_flutter.dart';  // Added Supabase
 
 class MedicationScreen extends StatefulWidget {
   const MedicationScreen({Key? key}) : super(key: key);
@@ -16,6 +17,12 @@ class _MedicationScreenState extends State<MedicationScreen> {
   // List of predefined times for schedule
   final List<String> times = ['07:00', '13:00', '19:00'];
 
+  // Supabase client
+  final supabase = Supabase.instance.client;
+
+  // Unique identifier per device/user (same approach as DietScreen)
+  String? _deviceId;
+
   @override
   void initState() {
     super.initState();
@@ -25,16 +32,77 @@ class _MedicationScreenState extends State<MedicationScreen> {
   Future<void> _loadMedications() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? storedMedications = prefs.getString('medications');
+
     if (storedMedications != null) {
       setState(() {
         medications = List<Map<String, dynamic>>.from(json.decode(storedMedications));
       });
     }
+
+    // Load or generate device_id
+    _deviceId ??= prefs.getString('med_device_id') ?? UniqueKey().toString();
+    await prefs.setString('med_device_id', _deviceId!);  // persist if new
+
+    // Try to load from Supabase (cloud has priority)
+    try {
+      final response = await supabase
+          .from('medications')
+          .select()
+          .eq('device_id', _deviceId!);
+
+      if (response.isNotEmpty) {
+        setState(() {
+          medications = (response as List).map((e) => {
+            'name': e['name'] as String,
+            'dosage': e['dosage'] as String,
+            'instruction': e['instruction'] as String,
+            'taken': e['taken'] as bool,
+            'time': e['time'] as String,
+          }).toList();
+        });
+        // Sync back to local storage
+        _saveMedications();
+      }
+    } catch (e) {
+      print('Supabase load error (medications): $e');
+      // Fall back to local data if offline/error
+    }
   }
 
   Future<void> _saveMedications() async {
+    // Save locally
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString('medications', json.encode(medications));
+
+    // Save to Supabase
+    if (_deviceId == null) return;
+
+    try {
+      // Delete existing entries for this device
+      await supabase
+          .from('medications')
+          .delete()
+          .eq('device_id', _deviceId!);
+
+      // Insert current list
+      if (medications.isNotEmpty) {
+        final List<Map<String, dynamic>> dataToInsert = medications.map((med) {
+          return {
+            'device_id': _deviceId,
+            'name': med['name'],
+            'dosage': med['dosage'],
+            'instruction': med['instruction'],
+            'taken': med['taken'],
+            'time': med['time'],
+          };
+        }).toList();
+
+        await supabase.from('medications').insert(dataToInsert);
+      }
+    } catch (e) {
+      print('Supabase save error (medications): $e');
+      // Optional: show user a snackbar about sync failure
+    }
   }
 
   void _addMedication() {
@@ -181,7 +249,6 @@ class _MedicationScreenState extends State<MedicationScreen> {
                 ],
               ),
             ),
-
             // Medication List
             Padding(
               padding: const EdgeInsets.all(16),
@@ -221,6 +288,7 @@ class _MedicationScreenState extends State<MedicationScreen> {
 class ScheduleCard extends StatelessWidget {
   final String time;
   final String count;
+
   const ScheduleCard({required this.time, required this.count, Key? key}) : super(key: key);
 
   @override
@@ -281,7 +349,14 @@ class MedicationItem extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.1), spreadRadius: 1, blurRadius: 3, offset: const Offset(0, 2))],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 3,
+            offset: const Offset(0, 2),
+          )
+        ],
       ),
       child: Row(
         children: [

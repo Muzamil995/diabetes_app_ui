@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/theme.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -9,12 +10,30 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  final supabase = Supabase.instance.client;
+
   @override
   void initState() {
     super.initState();
-    Future.delayed(const Duration(seconds: 3), () {
-      Navigator.pushReplacementNamed(context, '/');
-    });
+    _navigateToNextScreen();
+  }
+
+  Future<void> _navigateToNextScreen() async {
+    // Wait for 3 seconds to show splash screen
+    await Future.delayed(const Duration(seconds: 3));
+
+    if (!mounted) return;
+
+    // Check if user is already logged in
+    final session = supabase.auth.currentSession;
+
+    if (session != null) {
+      // User is logged in, go to home screen
+      Navigator.pushReplacementNamed(context, '/home');
+    } else {
+      // User is not logged in, go to login screen
+      Navigator.pushReplacementNamed(context, '/login');
+    }
   }
 
   @override
@@ -38,6 +57,10 @@ class _SplashScreenState extends State<SplashScreen> {
                 fontSize: 32,
                 fontWeight: FontWeight.bold,
               ),
+            ),
+            SizedBox(height: 24),
+            CircularProgressIndicator(
+              color: Colors.white,
             ),
           ],
         ),

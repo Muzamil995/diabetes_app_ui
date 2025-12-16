@@ -1,12 +1,11 @@
+import 'package:diabatic/screens/personal_data_screen.dart';
+import 'package:diabatic/screens/settings_screen.dart';
 import 'package:flutter/material.dart';
+import '../utils/theme.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
-import '../utils/theme.dart';
-import '../screens/personal_data_screen.dart';
-import '../screens/medical_history_screen.dart';
-import '../screens/glucose_target_screen.dart';
-import '../screens/settings_screen.dart';
-import '../screens/help_screen.dart';
 import 'dart:io';
 
 class ProfileScreen extends StatefulWidget {
@@ -17,46 +16,106 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  final supabase = Supabase.instance.client;
+  String? _deviceId;
+
   String fullName = "User";
-  String diabetesType = "Type 2 Diabetes";
+  String dob = "January 15, 1990";
   String weight = "75 kg";
-  String height = "170 cm";
-  String age = "30 yrs";
-  String? profileImagePath;
+  String height = "175 cm";
+  String diabetesType = "Type 2";
+  String bloodType = "B+";
+
+  int age = 0;
+
+  File? _profileImage;
+  String? _profileImageUrl;
+
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
-    _loadProfileData();
+    _loadPersonalData();
   }
 
-  Future<void> _loadProfileData() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    setState(() {
-      fullName = prefs.getString('fullName') ?? "User";
-      diabetesType = prefs.getString('diabetesType') ?? "Type 2 Diabetes";
-      weight = prefs.getString('weight') ?? "75 kg";
-      height = prefs.getString('height') ?? "170 cm";
-      // Calculate age if DOB is available
-      String? dob = prefs.getString('dob');
-      if (dob != null) {
-        DateTime birthDate = DateTime.tryParse(dob) ?? DateTime(1990, 1, 15);
-        int calculatedAge = DateTime.now().year - birthDate.year;
-        age = "$calculatedAge yrs";
+  Future<void> _loadPersonalData() async {
+    final prefs = await SharedPreferences.getInstance();
+    _deviceId ??= prefs.getString('personal_device_id') ?? UniqueKey().toString();
+    await prefs.setString('personal_device_id', _deviceId!);
+
+    try {
+      final response = await supabase
+          .from('personal_data')
+          .select('full_name, dob, weight, height, diabetes_type, blood_type, profile_image_url')
+          .eq('device_id', _deviceId!)
+          .maybeSingle();
+
+      if (response != null) {
+        final data = response as Map<String, dynamic>;
+
+        fullName = data['full_name'] ?? "User";
+        dob = data['dob'] ?? "January 15, 1990";
+        weight = data['weight'] ?? "75 kg";
+        height = data['height'] ?? "175 cm";
+        diabetesType = data['diabetes_type'] ?? "Type 2";
+        bloodType = data['blood_type'] ?? "B+";
+        _profileImageUrl = data['profile_image_url'];
+
+        // Calculate age
+        try {
+          final DateFormat format = DateFormat('MMMM d, yyyy');
+          final birthDate = format.parse(dob);
+          final today = DateTime.now();
+          age = today.year - birthDate.year;
+          if (today.month < birthDate.month ||
+              (today.month == birthDate.month && today.day < birthDate.day)) {
+            age--;
+          }
+        } catch (e) {
+          age = 0;
+        }
       }
-      profileImagePath = prefs.getString('profileImagePath');
-    });
+    } catch (e) {
+      print('Supabase load error (profile): $e');
+    }
+
+    if (mounted) setState(() {});
   }
 
-  Future<void> _pickProfileImage() async {
-    final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      await prefs.setString('profileImagePath', image.path);
+  Future<void> _pickAndUploadImage() async {
+    final XFile? pickedFile = await _picker.pickImage(source: ImageSource.gallery);
+
+    if (pickedFile == null) return;
+
+    setState(() {
+      _profileImage = File(pickedFile.path);
+    });
+
+    try {
+      final fileName = 'profile_$_deviceId.jpg';
+      await supabase.storage
+          .from('profile_images')
+          .upload(fileName, _profileImage!, fileOptions: const FileOptions(upsert: true));
+
+      final url = supabase.storage.from('profile_images').getPublicUrl(fileName);
+
+      await supabase
+          .from('personal_data')
+          .update({'profile_image_url': url})
+          .eq('device_id', _deviceId!);
+
       setState(() {
-        profileImagePath = image.path;
+        _profileImageUrl = url;
       });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile image updated successfully')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error uploading image: $e')),
+      );
     }
   }
 
@@ -64,244 +123,184 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
+      appBar: AppBar(
+        backgroundColor: Color(0xFFE31E24),
+        elevation: 0,
+        title: const Text(
+          "My Profile",
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.black),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
       body: SingleChildScrollView(
         child: Column(
           children: [
-            _buildHeader(),
-            _buildQuickStats(),
-            _buildMenuSection(context),
+            // Profile Header - Original design restored
+            Container(
+              padding: const EdgeInsets.all(20),
+              color: Colors.white,
+              child: Column(
+                children: [
+                  Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 60,
+                        backgroundImage: _profileImage != null
+                            ? FileImage(_profileImage!)
+                            : (_profileImageUrl != null
+                            ? NetworkImage(_profileImageUrl!) as ImageProvider<Object>?
+                            : null),
+                        backgroundColor: AppTheme.primaryRed.withOpacity(0.1),
+                        child: _profileImage == null && _profileImageUrl == null
+                            ? Icon(Icons.person, size: 70, color: AppTheme.primaryRed)
+                            : null,
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: GestureDetector(
+                          onTap: _pickAndUploadImage,
+                          child: CircleAvatar(
+                            radius: 18,
+                            backgroundColor: AppTheme.primaryRed,
+                            child: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    fullName,
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    "Age: $age years",
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildStatCard("Weight", weight, Icons.fitness_center),
+                      const SizedBox(width: 20),
+                      _buildStatCard("Height", height, Icons.height),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Navigation Menu - Fully restored original design with ListTiles
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.grey.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: Icon(Icons.person_outline, color: AppTheme.primaryRed),
+                    title: const Text("Personal Information"),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      // Navigate to Personal Data screen
+                      Navigator.push(context, MaterialPageRoute(builder: (context)=>PersonalDataScreen()));
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: Icon(Icons.medication, color: AppTheme.primaryRed),
+                    title: const Text("Medication Reminder"),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      Navigator.pushNamed(context, '/medication');
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: Icon(Icons.restaurant, color: AppTheme.primaryRed),
+                    title: const Text("Diet Plan"),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      Navigator.pushNamed(context, '/diet');
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: Icon(Icons.bar_chart, color: AppTheme.primaryRed),
+                    title: const Text("Health Reports"),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      Navigator.pushNamed(context, '/reports');
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: Icon(Icons.settings, color: AppTheme.primaryRed),
+                    title: const Text("Settings"),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                    onTap: () {
+                      // Navigate to Settings if exists
+                      Navigator.push(context, MaterialPageRoute(builder: (context)=>SettingsScreen()));
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 30),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.only(top: 60, bottom: 20),
-      decoration: BoxDecoration(
-        color: AppTheme.primaryRed,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(30),
-          bottomRight: Radius.circular(30),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primaryRed.withOpacity(0.3),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Stack(
-            alignment: Alignment.bottomRight,
-            children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundColor: Colors.white,
-                backgroundImage:
-                profileImagePath != null ? FileImage(File(profileImagePath!)) : null,
-                child: profileImagePath == null
-                    ? Icon(Icons.person, size: 50, color: AppTheme.primaryRed)
-                    : null,
-              ),
-              GestureDetector(
-                onTap: _pickProfileImage,
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: AppTheme.primaryRed, width: 2),
-                  ),
-                  child: Icon(Icons.edit, size: 20, color: AppTheme.primaryRed),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            fullName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              diabetesType,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickStats() {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatCard('Weight', weight, Icons.monitor_weight),
-          _buildStatCard('Height', height, Icons.height),
-          _buildStatCard('Age', age, Icons.calendar_today),
-        ],
-      ),
-    );
-  }
-
   Widget _buildStatCard(String label, String value, IconData icon) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 1,
-            blurRadius: 3,
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: AppTheme.primaryRed, size: 24),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(color: Colors.grey[600], fontSize: 14),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMenuSection(BuildContext context) {
     return Column(
       children: [
-        _buildMenuItem(
-          context,
-          'Personal Data',
-          Icons.person_outline,
-          'Manage your personal information',
-              () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const PersonalDataScreen()),
-          ).then((_) => _loadProfileData()), // refresh after returning
-        ),
-        _buildMenuItem(
-          context,
-          'Medical History',
-          Icons.history,
-          'View your medical records',
-              () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const MedicalHistoryScreen()),
+        Icon(icon, size: 32, color: AppTheme.primaryRed),
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
           ),
         ),
-        _buildMenuItem(
-          context,
-          'Glucose Targets',
-          Icons.track_changes,
-          'Set your blood glucose targets',
-              () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const GlucoseTargetScreen()),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            color: Colors.grey[600],
           ),
         ),
-        _buildMenuItem(
-          context,
-          'Settings',
-          Icons.settings,
-          'Configure the app',
-              () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const SettingsScreen()),
-          ),
-        ),
-        _buildMenuItem(
-          context,
-          'Help',
-          Icons.help_outline,
-          'Help center',
-              () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const HelpScreen()),
-          ),
-        ),
-        const SizedBox(height: 20),
-        _buildLogoutButton(context),
-        const SizedBox(height: 30),
       ],
-    );
-  }
-
-  Widget _buildMenuItem(
-      BuildContext context, String title, IconData icon, String subtitle, VoidCallback onTap) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            spreadRadius: 1,
-            blurRadius: 3,
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppTheme.primaryRed.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, color: AppTheme.primaryRed),
-        ),
-        title: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-        subtitle: Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-        trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
-        onTap: onTap,
-      ),
-    );
-  }
-
-  Widget _buildLogoutButton(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: ElevatedButton.icon(
-        onPressed: () {
-          Navigator.pushNamedAndRemoveUntil(context, '/', (route) => false);
-        },
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.red[50],
-          foregroundColor: AppTheme.primaryRed,
-          padding: const EdgeInsets.symmetric(vertical: 15),
-          minimumSize: const Size(double.infinity, 50),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        ),
-        icon: const Icon(Icons.logout),
-        label: const Text('Logout', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-      ),
     );
   }
 }
