@@ -205,7 +205,7 @@ class _PersonalDataScreenState extends State<PersonalDataScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        backgroundColor: Color(0xFFE31E24),
+        backgroundColor: Color(0xFF6C7BFF),
         elevation: 0,
         title: const Text(
           "Personal Data",

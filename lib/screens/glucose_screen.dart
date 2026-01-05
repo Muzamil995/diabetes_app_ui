@@ -33,7 +33,10 @@ class _GlucoseScreenState extends State<GlucoseScreen> {
     if (storedReadings != null) {
       setState(() {
         readings = List<Map<String, String>>.from(
-            json.decode(storedReadings));
+            (json.decode(storedReadings) as List)
+                .map((e) => Map<String, String>.from(e as Map<String, dynamic>))
+                .toList()
+        );
       });
     }
 

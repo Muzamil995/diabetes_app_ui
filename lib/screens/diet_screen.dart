@@ -32,7 +32,11 @@ class _DietScreenState extends State<DietScreen> {
 
     if (storedMeals != null) {
       setState(() {
-        meals = List<Map<String, String>>.from(json.decode(storedMeals));
+        meals = List<Map<String, String>>.from(
+            (json.decode(storedMeals) as List)
+                .map((e) => Map<String, String>.from(e as Map<String, dynamic>))
+                .toList()
+        );
       });
     }
 

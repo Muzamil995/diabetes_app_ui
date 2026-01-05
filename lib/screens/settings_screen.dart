@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../utils/theme.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -14,13 +15,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _reminderEnabled = true;
   String _selectedLanguage = 'Bahasa Indonesia';
   String _glucoseUnit = 'mg/dL';
+  final supabase = Supabase.instance.client;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        backgroundColor: Color(0xFFE31E24),
+        backgroundColor: Color(0xFF6C7BFF),
         elevation: 0,
         title: const Text(
           "Settings",
@@ -116,6 +118,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   "Send feedback",
                   Icons.mail_outline,
                       () {},
+                ),
+              ],
+            ),
+            _buildSection(
+              "Account",
+              [
+                _buildActionTile(
+                  "Logout",
+                  "Sign out from your account",
+                  Icons.logout,
+                      () => _showLogoutConfirmation(),
+                  isLogout: true,
                 ),
               ],
             ),
@@ -259,23 +273,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
       IconData icon,
       VoidCallback onTap, {
         bool showArrow = true,
+        bool isLogout = false,
       }) {
     return ListTile(
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: AppTheme.primaryRed.withOpacity(0.1),
+          color: isLogout
+              ? Colors.red.withOpacity(0.1)
+              : AppTheme.primaryRed.withOpacity(0.1),
           shape: BoxShape.circle,
         ),
-        child: Icon(icon, color: AppTheme.primaryRed),
+        child: Icon(icon, color: isLogout ? Colors.red : AppTheme.primaryRed),
       ),
-      title: Text(title),
+      title: Text(
+        title,
+        style: isLogout
+            ? TextStyle(color: Colors.red, fontWeight: FontWeight.bold)
+            : null,
+      ),
       subtitle: Text(subtitle),
       trailing: showArrow
           ? Icon(Icons.chevron_right, color: Colors.grey[400])
           : null,
       onTap: onTap,
     );
+  }
+
+  Future<void> _logout() async {
+    try {
+      // Show loading indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Logging out...'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+
+      // Sign out from Supabase
+      await supabase.auth.signOut();
+
+      // Navigate to login screen or home screen
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          '/login', // Change this to your login screen route
+              (route) => false,
+        );
+      }
+    } catch (e) {
+      print('Logout error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error logging out: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _showDeleteConfirmation() {
@@ -299,6 +354,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Text(
               "Delete",
               style: TextStyle(color: AppTheme.primaryRed),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLogoutConfirmation() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Logout"),
+        content: const Text(
+          "Are you sure you want to logout from your account?",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _logout();
+            },
+            child: Text(
+              "Logout",
+              style: TextStyle(color: Colors.red),
             ),
           ),
         ],
